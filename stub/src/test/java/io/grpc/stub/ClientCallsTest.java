@@ -32,15 +32,16 @@
 package io.grpc.stub;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.Matchers.any;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
-import com.google.common.util.concurrent.ListenableFuture;
-
-import io.grpc.ClientCall;
-import io.grpc.Metadata;
-import io.grpc.Status;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -48,16 +49,28 @@ import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
+import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
 
-import java.util.concurrent.CancellationException;
-import java.util.concurrent.ExecutionException;
+import com.google.common.util.concurrent.ListenableFuture;
+
+import io.grpc.ClientCall;
+import io.grpc.IntegerMarshaller;
+import io.grpc.Metadata;
+import io.grpc.MethodDescriptor;
+import io.grpc.Status;
+import io.grpc.StringMarshaller;
 
 /**
  * Unit tests for {@link ClientCalls}.
  */
 @RunWith(JUnit4.class)
 public class ClientCallsTest {
+
+  static final MethodDescriptor<Integer, String> STREAMING_METHOD = MethodDescriptor.create(
+      MethodDescriptor.MethodType.BIDI_STREAMING,
+      "some/method",
+      new IntegerMarshaller(), new StringMarshaller());
 
   @Mock private ClientCall<Integer, String> call;
 
@@ -110,5 +123,41 @@ public class ClientCallsTest {
     } catch (CancellationException e) {
       // Exepcted
     }
+  }
+
+  @Test public void runtimeStreamObserverIsCallStreamObserver() throws Exception {
+    final AtomicBoolean onReadyCalled = new AtomicBoolean();
+    StreamObserver<Integer> callObserver = ClientCalls.asyncBidiStreamingCall(call, new StreamObserver<String>() {
+      @Override
+      public void onNext(String value) {
+      }
+
+      @Override
+      public void onError(Throwable t) {
+      }
+
+      @Override
+      public void onCompleted() {
+      }
+    });
+    CallStreamObserver<Integer> callStreamObserver = (CallStreamObserver<Integer>) callObserver;
+    callStreamObserver.setOnReadyHandler(new Runnable() {
+      @Override
+      public void run() {
+        onReadyCalled.set(true);
+      }
+    });
+    ArgumentCaptor<ClientCall.Listener<String>> listenerCaptor = ArgumentCaptor.forClass(null);
+    verify(call).start(listenerCaptor.capture(), any(Metadata.class));
+    ClientCall.Listener<String> listener = listenerCaptor.getValue();
+    Mockito.when(call.isReady()).thenReturn(true).thenReturn(false);
+    assertTrue(callStreamObserver.isReady());
+    listener.onReady();
+    assertTrue(onReadyCalled.get());
+    listener.onMessage("1");
+    assertFalse(callStreamObserver.isReady());
+    // Is called twice, once to permit the first message and once again after the first message
+    // has been processed (auto flow control)
+    Mockito.verify(call, times(2)).request(1);
   }
 }

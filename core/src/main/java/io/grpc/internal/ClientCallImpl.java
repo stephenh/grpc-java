@@ -107,8 +107,7 @@ final class ClientCallImpl<ReqT, RespT> extends ClientCall<ReqT, RespT>
         : new SerializingExecutor(executor);
     // Propagate the context from the thread which initiated the call to all callbacks.
     this.parentContext = Context.current();
-    this.unaryRequest = method.getType() == MethodType.UNARY
-        || method.getType() == MethodType.SERVER_STREAMING;
+    this.unaryRequest = method.getType().clientSendsOneMessage();
     this.callOptions = callOptions;
     this.clientTransportProvider = clientTransportProvider;
     this.deadlineCancellationExecutor = deadlineCancellationExecutor;

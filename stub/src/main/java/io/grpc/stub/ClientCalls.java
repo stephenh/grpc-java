@@ -212,7 +212,7 @@ public class ClientCalls {
       ClientCall<ReqT, RespT> call, ReqT param, StreamObserver<RespT> responseObserver,
       boolean streamingResponse) {
     asyncUnaryRequestCall(call, param,
-        new StreamObserverToCallListenerAdapter<RespT>(call, responseObserver, streamingResponse),
+        new StreamObserverToCallListenerAdapter<ReqT, RespT>(call, null, responseObserver, streamingResponse),
         streamingResponse);
   }
 
@@ -234,9 +234,10 @@ public class ClientCalls {
   private static <ReqT, RespT> StreamObserver<ReqT> asyncStreamingRequestCall(
       ClientCall<ReqT, RespT> call, StreamObserver<RespT> responseObserver,
       boolean streamingResponse) {
-    startCall(call, new StreamObserverToCallListenerAdapter<RespT>(
-        call, responseObserver, streamingResponse), streamingResponse);
-    return new CallToStreamObserverAdapter<ReqT>(call);
+	CallToStreamObserverAdapter<ReqT> requestObserver = new CallToStreamObserverAdapter<ReqT>(call);
+    startCall(call, new StreamObserverToCallListenerAdapter<ReqT, RespT>(
+        call, requestObserver, responseObserver, streamingResponse), streamingResponse);
+    return requestObserver;
   }
 
   private static <ReqT, RespT> void startCall(ClientCall<ReqT, RespT> call,
@@ -251,8 +252,9 @@ public class ClientCalls {
     }
   }
 
-  private static class CallToStreamObserverAdapter<T> implements StreamObserver<T> {
+  private static class CallToStreamObserverAdapter<T> extends CallStreamObserver<T> {
     private final ClientCall<T, ?> call;
+    private Runnable onReadyHandler;
 
     public CallToStreamObserverAdapter(ClientCall<T, ?> call) {
       this.call = call;
@@ -273,18 +275,43 @@ public class ClientCalls {
     public void onCompleted() {
       call.halfClose();
     }
+
+    @Override
+    public void setOnReadyHandler(Runnable onReadyHandler) {
+      this.onReadyHandler = onReadyHandler;
+    }
+
+    @Override
+    public void disableAutoInboundFlowControl() {
+      throw new UnsupportedOperationException("Not implemented");
+    }
+
+    @Override
+    public void request(int numMessages) {
+      call.request(numMessages);
+    }
+
+    @Override
+    public boolean isReady() {
+      return call.isReady();
+    }
   }
 
-  private static class StreamObserverToCallListenerAdapter<RespT>
+  private static class StreamObserverToCallListenerAdapter<ReqT, RespT>
       extends ClientCall.Listener<RespT> {
     private final ClientCall<?, RespT> call;
+    private final CallToStreamObserverAdapter<ReqT> requestObserver;
     private final StreamObserver<RespT> observer;
     private final boolean streamingResponse;
     private boolean firstResponseReceived;
 
     public StreamObserverToCallListenerAdapter(
-        ClientCall<?, RespT> call, StreamObserver<RespT> observer, boolean streamingResponse) {
+        ClientCall<?, RespT> call,
+        CallToStreamObserverAdapter<ReqT> requestObserver,
+        StreamObserver<RespT> observer,
+        boolean streamingResponse) {
       this.call = call;
+      this.requestObserver = requestObserver;
       this.observer = observer;
       this.streamingResponse = streamingResponse;
     }
@@ -315,6 +342,13 @@ public class ClientCalls {
         observer.onCompleted();
       } else {
         observer.onError(status.asRuntimeException());
+      }
+    }
+
+    @Override
+    public void onReady() {
+      if (requestObserver != null && requestObserver.onReadyHandler != null) {
+        requestObserver.onReadyHandler.run();
       }
     }
   }
